@@ -1,3 +1,6 @@
 (defsystem cl-openstack-client
   :author "Julien Danjou <julien@danjou.info>"
-  :description "OpenStack client libraries")
+  :depends-on (#:drakma #:cl-json)
+  :description "OpenStack client libraries"
+  :components
+  ((:file "keystone")))
