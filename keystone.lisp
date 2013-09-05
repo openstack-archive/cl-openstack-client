@@ -4,7 +4,7 @@
            authenticate
            connection-username
            connection-tenant-id
-           connectino-tenant-name
+           connection-tenant-name
            connection-password
            connection-url
            connection-token-id
