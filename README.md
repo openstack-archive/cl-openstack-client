@@ -1,4 +1,4 @@
 cl-openstack-client
 ===================
 
-Common Lisp OpenStack client libraries
+OpenStack client libraries for Common Lisp
