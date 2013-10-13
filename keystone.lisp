@@ -1,5 +1,9 @@
 (defpackage cl-keystone-client
   (:use cl cl-json drakma)
+  (:import-from :local-time
+                :parse-timestring
+                :timestamp>
+                :now)
   (:export connection-v2
            authenticate
            keystone-error
@@ -11,7 +15,9 @@
            connection-password
            connection-url
            connection-token-id
-           connection-token-expires))
+           connection-token-expires
+           connection-token-issued-at
+           connection-token-valid-p))
 
 (in-package :cl-keystone-client)
 
@@ -121,9 +127,25 @@ to STREAM (or to *JSON-OUTPUT*)."
 (defmethod connection-token-id ((connection connection-v2))
   (cdr (assoc :id (slot-value connection 'token))))
 
+(defgeneric connection-token-issued-at (connection)
+  (:documentation "Return the time the CONNECTION's token was issued
+at."))
+
+(defmethod connection-token-issued-at ((connection connection-v2))
+  (parse-timestring (cdr (assoc :issued--at (slot-value connection 'token)))))
 
 (defgeneric connection-token-expires (connection)
-  (:documentation "Retrieve token expiration for CONNECTION."))
+  (:documentation "Return the time when the CONNECTION's token will
+expire."))
 
 (defmethod connection-token-expires ((connection connection-v2))
-  (cdr (assoc :expires (slot-value connection 'token))))
+  (parse-timestring (cdr (assoc :expires (slot-value connection 'token)))))
+
+(defgeneric connection-token-valid-p (connection)
+  (:documentation "Return T if the CONNECTION's token is still
+valid."))
+
+(defmethod connection-token-valid-p ((connection connection-v2))
+  (timestamp>
+   (connection-token-expires connection)
+   (now)))

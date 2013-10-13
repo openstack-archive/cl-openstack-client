@@ -6,7 +6,8 @@
                #:chunga
                #:drakma
                #:trivial-gray-streams
-               #:flexi-streams)
+               #:flexi-streams
+               #:local-time)
   :description "OpenStack client libraries tests"
   :components
   ((:file "keystone"
