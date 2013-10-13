@@ -17,7 +17,7 @@
 
 (in-package :cl-keystone-client-test)
 
-(def-suite keystone :description "My Example Suite")
+(def-suite keystone :description "Test the Openstack Keystone client.")
 
 (in-suite keystone)
 
@@ -54,8 +54,24 @@
                             (coerce '(#\Return #\Linefeed) 'string)))))
 
 (test make-connection
-      "Make a connection object"
-      (is-true (make-instance 'connection-v2)))
+  "Make a connection testing required fields."
+  (is-true
+   (make-instance 'connection-v2
+                  :username "test"
+                  :password "test"
+                  :url "test"))
+  (signals error
+    (make-instance 'connection-v2
+                   :password "test"
+                   :url "test"))
+  (signals error
+    (make-instance 'connection-v2
+                   :username "test"
+                   :url "test"))
+  (signals error
+    (make-instance 'connection-v2
+                   :username "test"
+                   :password "test")))
 
 (test authentication-error-404
   "Test that the correct condition is signalled when a 404 is returned
