@@ -1,7 +1,9 @@
 (defsystem cl-openstack-client-test
   :author "Julien Danjou <julien@danjou.info>"
   :depends-on (#:cl-openstack-client
-               #:fiveam)
+               #:fiveam
+               #:trivial-gray-streams
+               #:flexi-streams)
   :description "OpenStack client libraries tests"
   :components
   ((:file "keystone"
