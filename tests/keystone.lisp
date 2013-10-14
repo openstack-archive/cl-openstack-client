@@ -1,8 +1,7 @@
-(defpackage cl-keystone-client-test
+(defpackage cl-keystone-client.test
   (:use fiveam
         cl
         trivial-gray-streams
-        cl-openstack-client-test
         cl-keystone-client)
   (:import-from :local-time
                 :encode-timestamp
@@ -23,11 +22,13 @@
   (:import-from :chunga
                 :make-chunked-stream))
 
-(in-package :cl-keystone-client-test)
+(in-package :cl-keystone-client.test)
 
-(def-suite keystone :description "Test the Openstack Keystone client.")
+(def-suite tests
+  :in cl-openstack-client.test:tests
+  :description "Test the Openstack Keystone client.")
 
-(in-suite keystone)
+(in-suite tests)
 
 (defparameter +keystone-format+
   ;; same as +ISO-8601-FORMAT+ except with non nano seconds.

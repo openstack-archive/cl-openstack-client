@@ -1,3 +1,6 @@
+(load (merge-pathnames "quicklisp/setup.lisp"
+                       (user-homedir-pathname)))
+
 (defun terminate (status)
   #+sbcl     (sb-ext:quit      :unix-status status)    ; SBCL
   #+ccl      (   ccl:quit      status)                 ; Clozure CL
@@ -8,6 +11,6 @@
   (cl-user::quit))           ; Many implementations put QUIT in the sandbox CL-USER package.
 
 (require 'cl-openstack-client-test)
-(let ((results (5am:run 5am::*suite*)))
+(let ((results (5am:run 'cl-openstack-client.test:tests)))
   (5am:explain! results)
-  (terminate (if (eq (5am:results-status results ) t) 0 1)))
+  (terminate (if (eq (5am:results-status results) t) 0 1)))
