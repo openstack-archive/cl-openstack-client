@@ -4,6 +4,9 @@
 
 (in-package :cl-openstack-client-test)
 
+(def-suite cl-openstack-client.test
+  :description "cl-openstack-client tests")
+
 (defmacro with-function-patch (patch &rest body)
   "Takes a PATCH form like a FLET clause, i.e. (fn-name (lambda-list) body),
 evaluates BODY in an environment with fn-name rebound to the PATCH form and
