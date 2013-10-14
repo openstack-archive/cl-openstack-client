@@ -1,0 +1,8 @@
+Verified+2: Jenkins
+Approved+1: Julien Danjou <julien@danjou.info>
+Code-Review+2: Julien Danjou <julien@danjou.info>
+Submitted-by: Jenkins
+Submitted-at: Mon, 14 Oct 2013 13:29:43 +0000
+Reviewed-on: https://review.openstack.org/51445
+Project: stackforge/cl-openstack-client
+Branch: refs/heads/master
