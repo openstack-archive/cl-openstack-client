@@ -25,7 +25,9 @@
 
 (in-package :cl-keystone-client-test)
 
-(def-suite keystone :description "Test the Openstack Keystone client.")
+(def-suite cl-openstack-client.test.keystone
+  :cl-openstack-client.test
+  :description "Test the Openstack Keystone client.")
 
 (in-suite keystone)
 
