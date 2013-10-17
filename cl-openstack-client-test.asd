@@ -10,8 +10,7 @@
                #:local-time)
   :description "OpenStack client libraries tests"
   :components
-  ((:file "keystone"
-          :pathname "tests/keystone"
-          :depends-on ("openstack"))
-   (:file "openstack"
-          :pathname "tests/openstack")))
+  ((:module "tests"
+    :components
+    ((:file "keystone" :depends-on ("openstack"))
+     (:file "openstack")))))
