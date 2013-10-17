@@ -1,3 +1,5 @@
 cl-json
 drakma
 local-time
+uri-template
+alexandria
