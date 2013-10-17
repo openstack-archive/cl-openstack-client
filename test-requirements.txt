@@ -1,1 +1,7 @@
 fiveam
+cl-ppcre
+chunga
+drakma
+trivial-gray-streams
+flexi-streams
+local-time
