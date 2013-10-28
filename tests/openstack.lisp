@@ -13,6 +13,8 @@
                 #:now)
   (:import-from #:cl-keystone-client
                 #:connection-v2)
+  (:import-from #:cl-openstack-client
+                #:*http-stream*)
   (:import-from #:flexi-streams
                 #:string-to-octets
                 #:make-flexi-stream
@@ -110,20 +112,6 @@
              (:endpoints-links) (:type . "identity") (:name . "keystone"))))
     connection))
 
-(defun is-valid-response (stream method uri content)
-  (destructuring-bind (status headers content)
-      (read-mock-request mock-stream)
-    (is (equal content
-               "{\"user\":{\"name\":\"test\",\"email\":\"test@example.com\",\"enabled\":true,\"password\":\"secret\"}}"))
-    (is (string-equal "application/json"
-                      (header-value :content-type headers)))
-    (is (string-equal "MIINUAYJKoZIhvcNAQ=="
-                      (header-value :x-auth-token headers)))
-    (is (string-equal "192.168.1.9:5000"
-                      (header-value :host headers)))
-    (is (eql (getf status :method) method))
-    (is (eql (getf status :uri) uni))))
-
 (defclass mock-http-stream (fundamental-binary-input-stream
                             fundamental-binary-output-stream
                             fundamental-character-input-stream
@@ -210,9 +198,8 @@ form (parsed-status-line headers contents)"
 
 (defmacro with-mock-http-stream ((stream) &body body)
   `(let* ((,stream (make-instance 'mock-http-stream))
-          (cl-keystone-client::*cached-stream*
-            (make-flexi-stream (make-chunked-stream ,stream)
-                               :external-format +latin-1+)))
+          (*http-stream* (make-flexi-stream (make-chunked-stream ,stream)
+                                            :external-format +latin-1+)))
      ,@body))
 
 
