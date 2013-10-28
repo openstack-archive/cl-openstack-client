@@ -62,7 +62,7 @@
 object."
   (let ((connection (connection-fixture)))
     (setf (slot-value connection 'cl-keystone-client::token)
-          '((:issued--at . "2013-10-13T06:01:36.315343")
+          '((:issued-at . "2013-10-13T06:01:36.315343")
             (:expires . "2013-10-14T06:01:36Z")))
     (is (timestamp=
          (connection-token-expires connection)
@@ -118,6 +118,62 @@ from the keystone server."
       (is (eql (getf status :method) :post))
       (is (string-equal (getf status :uri) "/v2.0/tokens")))))
 
+
+(test authentication
+  "Test that authentication correctly initialises the connection object."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"access\": {\"token\": {\"issued_at\": \"2013-10-28T21:31:34.158770\", \"expires\": \"2013-10-29T21:31:34Z\", \"id\": \"MIINUAYJKoZIhvcNAQ==\", \"tenant\": {\"description\": null, \"enabled\": true, \"id\": \"36215f8\", \"name\": \"admin\"}}, \"serviceCatalog\": [{\"endpoints\": [{\"adminURL\": \"http://192.168.1.9:8774/v2/36215f8\", \"region\": \"RegionOne\", \"internalURL\": \"http://192.168.1.9:8774/v2/36215f8\", \"id\": \"53ad66f\", \"publicURL\": \"http://192.168.1.9:8774/v2/36215f8\"}], \"endpoints_links\": [], \"type\": \"compute\", \"name\": \"nova\"}, {\"endpoints\": [{\"adminURL\": \"http://192.168.1.9:35357/v2.0\", \"region\": \"RegionOne\", \"internalURL\": \"http://192.168.1.9:5000/v2.0\", \"id\": \"1d6a58b\", \"publicURL\": \"http://192.168.1.9:5000/v2.0\"}], \"endpoints_links\": [], \"type\": \"identity\", \"name\": \"keystone\"}], \"user\": {\"username\": \"admin\", \"roles_links\": [], \"id\": \"717a936\", \"roles\": [{\"name\": \"admin\"}], \"name\": \"admin\"}, \"metadata\": {\"is_admin\": 0, \"roles\": [\"a0dfe95\"]}}}")
+    (let ((connection
+            (authenticate (make-instance 'connection-v2
+                                         :tenant-name "test"
+                                         :url "http://test:5000"
+                                         :username "test"
+                                         :password "test"))))
+      (is (equal (connection-token-id connection)
+                 "MIINUAYJKoZIhvcNAQ=="))
+      (is (equal (connection-service-catalog connection)
+                 '(((:endpoints
+                     ((:admin-url . "http://192.168.1.9:8774/v2/36215f8")
+                      (:region . "RegionOne")
+                      (:internal-url . "http://192.168.1.9:8774/v2/36215f8")
+                      (:id . "53ad66f")
+                      (:public-url . "http://192.168.1.9:8774/v2/36215f8")))
+                    (:endpoints-links)
+                    (:type . "compute")
+                    (:name . "nova"))
+                   ((:endpoints
+                     ((:admin-url . "http://192.168.1.9:35357/v2.0")
+                      (:region . "RegionOne")
+                      (:internal-url . "http://192.168.1.9:5000/v2.0")
+                      (:id . "1d6a58b")
+                      (:public-url . "http://192.168.1.9:5000/v2.0")))
+                    (:endpoints-links)
+                    (:type . "identity")
+                    (:name . "keystone")))))
+      (with-slots (id name enabled description)
+          (connection-tenant connection)
+        (is (equal (list id name enabled description)
+                   (list "36215f8" "admin" t nil))))
+      (is (timestamp=
+         (connection-token-expires connection)
+         (encode-timestamp 0 34 31 21 29 10 2013
+                           :timezone +utc-zone+)))
+      (is (timestamp=
+         (connection-token-issued-at connection)
+         (encode-timestamp 158770000 34 31 21 28 10 2013
+                           :timezone +utc-zone+))))
+    (destructuring-bind (status headers content)
+        (read-mock-request mock-stream)
+      (is (equal content
+                 "{\"auth\":{\"passwordCredentials\":{\"username\":\"test\",\"password\":\"test\"},\"tenantName\":\"test\"}}"))
+      (is (string-equal "application/json"
+                        (header-value :content-type headers)))
+      (is (string-equal "test:5000"
+                        (header-value :host headers)))
+      (is (eql (getf status :method) :post))
+      (is (string-equal (getf status :uri) "/v2.0/tokens")))))
 
 (test list-tenants
   "Test the parsing of a tenants list response."

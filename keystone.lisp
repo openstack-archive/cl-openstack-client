@@ -46,14 +46,30 @@
            connection-token-expires
            connection-token-issued-at
            connection-token-valid-p
+           connection-tenant
+           connection-service-catalog
+
+           ;; Resource Methods
            resource-id
            resource-name
            resource-connection
+           resource-description
+
+           ;; Resource Slots
+           id
+           name
+           enabled
+           description
+
+           ;; Tenant Methods
+           tenant
            tenant-id
            tenant-name
            tenant-enabled
            tenant-description
            list-tenants
+
+           ;; User Methods
            user-id
            user-name
            user-tenant
@@ -64,6 +80,8 @@
            get-user
            delete-user
            list-users
+
+           ;; Role Methods
            role-id
            role-name
            role-enabled
@@ -87,9 +105,8 @@
    (endpoint :initarg :endpoint
              :initform :public-url
              :reader connection-endpoint)
-   (token :initarg :password)
+   (token)
    (user)
-   (tenant)
    (metadata)
    (service-catalog :reader connection-service-catalog)
    (url :initarg :url
@@ -160,7 +177,7 @@ with underscores to hyphens."
   (:documentation "Authenticate and retrieve a token."))
 
 (defmethod authenticate ((connection connection-v2))
-  (with-slots (url token user service-catalog metadata tenant) connection
+  (with-slots (url token user service-catalog metadata) connection
     (multiple-value-bind (body status-code headers uri stream must-close reason-phrase)
         (http-request (format nil "~a/v2.0/tokens" url)
                       :method :POST
@@ -174,7 +191,6 @@ with underscores to hyphens."
       (let ((access (assoc* :access (decode-json stream))))
         (setf user (assoc* :user access))
         (setf service-catalog (assoc* :service-catalog access))
-        (setf tenant (assoc* :tenant access))
         (setf metadata (assoc* :metadata access))
         (setf token (assoc* :token access)))))
   connection)
@@ -190,7 +206,7 @@ with underscores to hyphens."
 at."))
 
 (defmethod connection-token-issued-at ((connection connection-v2))
-  (parse-timestring (assoc* :issued--at (slot-value connection 'token))))
+  (parse-timestring (assoc* :issued-at (slot-value connection 'token))))
 
 (defgeneric connection-token-expires (connection)
   (:documentation "Return the time when the CONNECTION's token will
@@ -207,6 +223,13 @@ valid."))
   (timestamp>
    (connection-token-expires connection)
    (now)))
+
+(defmethod connection-tenant ((connection connection-v2))
+  "Return the current connections TENANT."
+  (apply #'make-instance
+         'tenant-v2
+         :connection connection
+         (alist-plist (assoc* :tenant (slot-value connection 'token)))))
 
 (defmethod resource-authentication-headers ((resource connection-v2))
   `(("x-auth-token" . ,(connection-token-id resource))))
