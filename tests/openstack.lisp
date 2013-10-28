@@ -13,6 +13,8 @@
                 #:now)
   (:import-from #:cl-keystone-client
                 #:connection-v2)
+  (:import-from #:cl-openstack-client
+                #:*http-stream*)
   (:import-from #:flexi-streams
                 #:string-to-octets
                 #:make-flexi-stream
@@ -210,9 +212,8 @@ form (parsed-status-line headers contents)"
 
 (defmacro with-mock-http-stream ((stream) &body body)
   `(let* ((,stream (make-instance 'mock-http-stream))
-          (cl-keystone-client::*cached-stream*
-            (make-flexi-stream (make-chunked-stream ,stream)
-                               :external-format +latin-1+)))
+          (*http-stream* (make-flexi-stream (make-chunked-stream ,stream)
+                                            :external-format +latin-1+)))
      ,@body))
 
 
