@@ -9,6 +9,7 @@
                #:flexi-streams
                #:local-time)
   :description "OpenStack client libraries tests"
+  :licence "Apache-2.0"
   :components
   ((:module "tests"
     :components
