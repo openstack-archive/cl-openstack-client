@@ -5,6 +5,7 @@
                 #:assoc*
                 #:decode-resource
                 #:decode-resource-list
+                #:decode-json
                 #:def-rest-method
                 #:error-code
                 #:error-message
@@ -31,12 +32,15 @@
                 #:encode-json
                 #:encode-json-to-string)
   (:import-from #:alexandria
-                #:alist-plist)
-  (:export connection-v2
-           authenticate
-           keystone-error
+                #:alist-plist
+                #:if-let)
+  (:export keystone-error
            error-code
            error-message
+
+           ;; Connection methods
+           connection
+           connection-v2
            connection-username
            connection-tenant-id
            connection-tenant-name
@@ -47,7 +51,11 @@
            connection-token-issued-at
            connection-token-valid-p
            connection-tenant
+           connection-user
            connection-service-catalog
+           connection-api-details
+           list-versions
+           authenticate
 
            ;; Resource Methods
            resource-id
@@ -63,13 +71,19 @@
 
            ;; Tenant Methods
            tenant
+           tenant-v2
            tenant-id
            tenant-name
            tenant-enabled
            tenant-description
+           add-tenant
+           get-tenant
+           delete-tenant
            list-tenants
 
            ;; User Methods
+           user
+           user-v2
            user-id
            user-name
            user-tenant
@@ -82,10 +96,28 @@
            list-users
 
            ;; Role Methods
+           role
+           role-v2
            role-id
            role-name
+           role-description
            role-enabled
-           list-roles))
+           add-role
+           get-role
+           delete-role
+           list-roles
+           add-users-tenant-role
+           delete-users-tenant-role
+
+           ;; Service Methods
+           service-v2
+           service-type
+           service-enabled
+           service-description
+           add-service
+           get-service
+           delete-service
+           list-services))
 
 (in-package :cl-keystone-client)
 
@@ -113,7 +145,7 @@
         :reader connection-url
         :initform (error ":URL is required when creating a connection."))))
 
-;; Add API compatability with the resource object
+;; Add API compatibility with the resource object
 (defmethod resource-connection ((connection connection))
   connection)
 
@@ -148,31 +180,6 @@ to STREAM (or to *JSON-OUTPUT*)."
   (declare (ignore action))
   nil)
 
-(defun openstack-camel-case-to-lisp (camel-string)
-  "Convert camel case JSON keys to lisp symbol names.  This function
-handles keys with names like publicURL better and will convert keys
-with underscores to hyphens."
-  (declare (string camel-string))
-  (let ((*print-pretty* nil))
-    (with-output-to-string (result)
-      (loop :for c :across camel-string
-            :with last-was-lowercase
-            :when (and last-was-lowercase
-                       (upper-case-p c))
-              :do (princ "-" result)
-            :if (lower-case-p c)
-              :do (setf last-was-lowercase t)
-            :else
-              :do (setf last-was-lowercase nil)
-            :if (member c (list #\_))
-              :do (princ "-" result)
-            :else
-              :do (princ (char-upcase c) result)))))
-
-(defun decode-json (&optional (stream *json-input*))
-  (let ((*json-identifier-name-to-lisp* #'openstack-camel-case-to-lisp))
-    (cl-json:decode-json stream)))
-
 (defgeneric authenticate (connection)
   (:documentation "Authenticate and retrieve a token."))
 
@@ -180,7 +187,7 @@ with underscores to hyphens."
   (with-slots (url token user service-catalog metadata) connection
     (multiple-value-bind (body status-code headers uri stream must-close reason-phrase)
         (http-request (format nil "~a/v2.0/tokens" url)
-                      :method :POST
+                      :method :post
                       :want-stream t
                       :stream *http-stream*
                       :content-type "application/json"
@@ -226,10 +233,19 @@ valid."))
 
 (defmethod connection-tenant ((connection connection-v2))
   "Return the current connections TENANT."
+  (unless (slot-boundp connection 'token)
+    (error "Connection is not authenticated."))
   (apply #'make-instance
          'tenant-v2
          :connection connection
          (alist-plist (assoc* :tenant (slot-value connection 'token)))))
+
+(defmethod connection-user ((connection connection-v2))
+  "Return the current connections TENANT."
+  (unless (slot-boundp connection 'token)
+    (error "Connection is not authenticated."))
+  (get-user connection
+            (assoc* :id (slot-value connection 'user))))
 
 (defmethod resource-authentication-headers ((resource connection-v2))
   `(("x-auth-token" . ,(connection-token-id resource))))
@@ -248,9 +264,13 @@ valid."))
           :append (filter-endpoints (assoc* :endpoints service)
                                     :type type)))
 
-(defmethod service-url ((connection connection-v2) &optional (service "identity"))
-  (car (service-catalog-query connection service
-                              :type (connection-endpoint connection))))
+(defmethod service-url ((connection connection-v2) &key
+                                                     (service-name "identity")
+                                                     endpoint-type)
+  (car (service-catalog-query
+        connection
+        service-name
+        :type (or endpoint-type (connection-endpoint connection)))))
 
 
 (defclass resource-v2 (resource)
@@ -262,8 +282,13 @@ valid."))
 (defmethod resource-authentication-headers ((resource resource-v2))
   (resource-authentication-headers (resource-connection resource)))
 
-(defmethod service-url ((resource resource-v2) &optional (service "identity"))
-  (service-url (resource-connection resource) service))
+(defmethod service-url ((resource resource-v2) &key
+                                                 (service-name "identity")
+                                                 endpoint-type)
+  (car (service-catalog-query
+        (resource-connection resource)
+        service-name
+        :type (or endpoint-type (connection-endpoint (resource-connection resource))))))
 
 
 (defclass named-resource-v2 (resource-v2)
@@ -284,8 +309,32 @@ valid."))
                   (t "UNKNOWN"))))
       (print-unreadable-object (resource stream :type t :identity t))))
 
+;; API Versions
+(defgeneric list-versions (resource))
 
+(defmethod list-versions ((connection connection-v2))
+  "Lists information about all Compute API versions."
+  (with-slots (url) connection
+    (multiple-value-bind (body status-code headers uri stream must-close reason-phrase)
+        (http-request (format nil "~a" url)
+                      :method :GET
+                      :want-stream t
+                      :accept "application/json"
+                      :stream *http-stream*)
+      (declare (ignore must-close reason-phrase body))
+      (handle-http-error connection uri status-code headers stream :success-codes '(200 300))
+      (decode-json stream))))
+
+
+(def-rest-method connection-api-details ((connection connection))
+    ((:documentation "Shows details for the Identity API.")
+     (:uri "/"))
+  (let ((json (request-resource connection :method :get)))
+    json))
+
+;;
 ;; Tenants
+;;
 
 (defclass tenant (named-resource-v2)
   ((id :initarg :id :reader tenant-id)
@@ -312,23 +361,81 @@ to STREAM (or to *JSON-OUTPUT*)."
           :enabled ,enabled))
        stream))))
 
-(defmethod decode-resource ((type (eql 'tenant-v2)) (parent connection-v2) stream)
-  (loop :for tenant :in (assoc* :tenants (decode-json stream))
-        :collect (apply #'make-instance
-                        type
-                        :connection parent
-                        (alist-plist tenant))))
+(defgeneric add-tenant (connection &key name description enabled))
 
-(defgeneric list-tenants (resource))
+(def-rest-method add-tenant ((connection connection-v2) &key name description (enabled t))
+    ((:documentation "Add a tenant.")
+     (:endpoint-type :admin-url)
+     (:uri "/tenants"))
+  (let ((json (request-resource
+               connection
+               :method :post
+               :content (with-output-to-string (stream)
+                          (with-explicit-encoder
+                            (encode-json
+                             `(:object
+                               :tenant
+                               (:object
+                                :name ,name
+                                :description ,description
+                                :enabled ,enabled))
+                             stream))))))
+    (decode-resource (assoc* :tenant json)
+                     connection
+                     'tenant-v2)))
 
-(def-rest-method list-tenants ((connection connection-v2))
+
+(defgeneric get-tenant-by-name (resource &key name))
+(def-rest-method get-tenant-by-name ((connection connection-v2) &key name)
+    ((:documentation "Get a Tenant by name.")
+     (:endpoint-type :admin-url)
+     (:uri "/tenants")
+     (:query (name)))
+  (let ((json (request-resource connection :method :get)))
+    (decode-resource (assoc* :tenant json)
+                     connection 'tenant-v2)))
+
+
+(defgeneric get-tenant (resource tenant-id-or-name))
+
+(def-rest-method get-tenant (connection tenant-id-or-name)
+    ((:documentation "Get tenant information by id or name.")
+     (:endpoint-type :admin-url)
+     (:uri "/tenants/{tenant-id-or-name}"))
+
+  (handler-case
+      (let ((json (request-resource connection :method :get)))
+        (decode-resource (assoc* :tenant json)
+                         connection
+                         'tenant-v2))
+    (keystone-error (ks-error)
+      (if (eq (error-code ks-error) 404)
+          (get-tenant-by-name connection :name tenant-id-or-name)
+          (error ks-error)))))
+
+
+(defgeneric delete-tenant (resource tenant-or-tenant-id))
+
+(def-rest-method delete-tenant ((connection connection-v2) tenant-or-tenant-id)
+    ((:documentation "Delete a tenant.")
+     (:endpoint-type :admin-url)
+     (:uri "/tenants/{tenant-or-tenant-id}"))
+  (request-resource connection :method :delete))
+
+
+(defgeneric list-tenants (resource &key as-admin))
+
+(def-rest-method list-tenants ((connection connection-v2) &key as-admin)
     ((:documentation "List all the tenants.")
+     (:endpoint-type (when as-admin :admin-url))
      (:uri "/tenants"))
   (let ((json (request-resource connection :method :get)))
     (decode-resource-list (assoc* :tenants json)
                           connection 'tenant-v2)))
 
+;;
 ;; Users
+;;
 
 (defclass user (named-resource-v2)
   ((name :initarg :name :reader user-name)
@@ -351,37 +458,11 @@ to STREAM (or to *JSON-OUTPUT*)."
 (defmethod user-name ((connection connection-v2))
   (assoc* :name (slot-value connection 'user)))
 
-(defgeneric list-users (resource))
-
-(def-rest-method list-users ((tenant tenant-v2))
-  ((:documentation "List all the users for tenant.")
-   (:uri "/tenants/{tenant}/users"))
-  (let ((json (request-resource tenant
-                                :method :get)))
-    (decode-resource-list (assoc* :users json)
-                          tenant
-                          'user-v2)))
-
-(def-rest-method list-users ((connection connection-v2))
-    ((:documentation "List all users in keystone.")
-     (:uri "/users"))
-  (let ((json (request-resource connection :method :get)))
-    (decode-resource-list (assoc* :users json)
-                          connection
-                          'user-v2)))
-
-(def-rest-method get-user (connection user)
-  ((:documentation "Gets information for a specified user.")
-   (:uri "/users/{user}"))
-  (let ((json (request-resource connection :method :get)))
-    (decode-resource (assoc* :user json)
-                     connection
-                     'user-v2)))
-
 (defgeneric add-user (connection &key name email enabled password))
 
 (def-rest-method add-user ((connection connection-v2) &key name email (enabled t) password)
     ((:documentation "Add a user.")
+     (:endpoint-type :admin-url)
      (:uri "/users"))
   (let ((json (request-resource
                connection
@@ -401,50 +482,193 @@ to STREAM (or to *JSON-OUTPUT*)."
                      connection
                      'user-v2)))
 
+(def-rest-method get-user (connection user)
+  ((:documentation "Gets information for a specified user.")
+   (:endpoint-type :admin-url)
+   (:uri "/users/{user}"))
+  (let ((json (request-resource connection :method :get)))
+    (decode-resource (assoc* :user json)
+                     connection
+                     'user-v2)))
 
 (defgeneric delete-user (resource user-or-user-id))
 
 (def-rest-method delete-user ((connection connection-v2) user-or-user-id)
-  ((:documentation "Delete a user.")
-   (:uri "/users/{user-or-user-id}"))
+    ((:documentation "Delete a user.")
+     (:endpoint-type :admin-url)
+     (:uri "/users/{user-or-user-id}"))
   (request-resource connection :method :delete))
 
+(defgeneric list-users (resource))
+
+(def-rest-method list-users ((tenant tenant-v2))
+    ((:documentation "List all the users for tenant.")
+     (:endpoint-type :admin-url)
+     (:uri "/tenants/{tenant}/users"))
+  (let ((json (request-resource tenant
+                                :method :get)))
+    (decode-resource-list (assoc* :users json)
+                          tenant
+                          'user-v2)))
+
+(def-rest-method list-users ((connection connection-v2))
+    ((:documentation "List all users in keystone.")
+     (:endpoint-type :admin-url)
+     (:uri "/users"))
+  (let ((json (request-resource connection :method :get)))
+    (decode-resource-list (assoc* :users json)
+                          connection
+                          'user-v2)))
+
+;;
 ;; Roles
+;;
 
 (defclass role (named-resource-v2)
   ((id :initarg :id :reader role-id)
-   (name :initarg :name :reader role-name)
-   (enabled :initarg :enabled :reader role-enabled)))
+   (description :initarg :description :reader role-description)
+   (name :initarg :name :reader role-name)))
 
 (defclass role-v2 (role)
   ())
 
-(defgeneric add-tenant-users-role (tenant user role))
+(defgeneric add-role (context &key name description))
 
-(def-rest-method add-tenant-users-role (tenant user role)
-  ((:documentation "Adds a specified role to a user for a tenant.")
-   (:uri "/tenants/{tenant}/users/{user}/roles/OS-KSADM/{role}"))
-  (request-resource tenant :method :put))
+(def-rest-method add-role ((connection connection-v2) &key name (description ""))
+    ((:documentation "Add a role.")
+     (:endpoint-type :admin-url)
+     (:uri "/OS-KSADM/roles"))
+  (let ((json (request-resource
+               connection
+               :method :post
+               :content (with-output-to-string (stream)
+                          (with-explicit-encoder
+                            (encode-json
+                             `(:object
+                               :role
+                               (:object
+                                :name ,name
+                                :description ,description))
+                             stream))))))
+    (decode-resource (assoc* :role json) connection 'role-v2)))
 
-(defgeneric delete-tenants-user-role (tenant user role))
+(defgeneric get-role (context role-id))
 
-(def-rest-method delete-tenants-user-role (tenant user role)
-    ((:documentation "Deletes a specified role from a user on a tenant.")
-     (:uri "/tenants/{tenant}/users/{user}/roles/OS-KSADM/{role}"))
-  (request-resource tenant :method :delete))
+(def-rest-method get-role ((connection connection-v2) role-id)
+    ((:documentation "Get a role by ID.")
+     (:endpoint-type :admin-url)
+     (:uri "/OS-KSADM/roles/{role-id}"))
+  (let ((json (request-resource connection :method :get)))
+    (decode-resource (assoc* :role json) connection 'role-v2)))
 
-(defgeneric list-roles (resource))
+(defgeneric delete-role (context role-id))
 
-(def-rest-method list-roles ((connection connection-v2))
+(def-rest-method delete-role ((connection connection-v2) role-or-role-id)
+    ((:documentation "Delete a role.")
+     (:endpoint-type :admin-url)
+     (:uri "/OS-KSADM/roles/{role-or-role-id}"))
+  (request-resource connection :method :delete))
+
+(defgeneric list-roles (context resource))
+
+(def-rest-method list-roles ((connection connection-v2) resource)
     ((:documentation "List roles.")
+     (:endpoint-type :admin-url)
      (:uri "/OS-KSADM/roles/"))
   (let ((json (request-resource connection :method :get)))
     (decode-resource-list (assoc* :roles json) connection 'role-v2)))
 
 
-(def-rest-method list-roles ((user user-v2))
-  ((:documentation "Lists global roles for a specified user. Excludes
+(def-rest-method list-roles ((connection connection-v2) (user user-v2))
+    ((:documentation "Lists global roles for a specified user. Excludes
 tenant roles.")
-   (:uri "/users/{user}/roles"))
+     (:endpoint-type :admin-url)
+     (:uri "/users/{user}/roles"))
   (let ((json (request-resource user :method :get)))
-    (decode-resource (assoc* :roles json) user 'role-v2)))
+    (decode-resource-list (assoc* :roles json) user 'role-v2)))
+
+
+(def-rest-method list-roles ((tenant tenant-v2) (user user-v2))
+    ((:documentation "Lists roles a user has in a specific tenant.")
+     (:endpoint-type :admin-url)
+     (:uri "/tenants/{tenant}/users/{user}/roles"))
+  (let ((json (request-resource user :method :get)))
+    (decode-resource-list (assoc* :roles json) user 'role-v2)))
+
+(defgeneric add-users-tenant-role (tenant user role))
+
+(def-rest-method add-users-tenant-role (tenant user role)
+    ((:documentation "Adds a specified role to a user for a tenant.")
+     (:endpoint-type :admin-url)
+     (:uri "/tenants/{tenant}/users/{user}/roles/OS-KSADM/{role}"))
+  (let ((json (request-resource tenant :method :put)))
+    (decode-resource (assoc* :role json) (resource-connection tenant) 'role-v2)))
+
+(defgeneric delete-users-tenant-role (tenant user role))
+
+(def-rest-method delete-users-tenant-role (tenant user role)
+    ((:documentation "Deletes a specified role from a user on a tenant.")
+     (:endpoint-type :admin-url)
+     (:uri "/tenants/{tenant}/users/{user}/roles/OS-KSADM/{role}"))
+  (request-resource tenant :method :delete))
+
+
+
+;;
+;; Services
+;;
+
+(defclass service-v2 (named-resource-v2)
+  ((type :initarg :type :reader service-type)
+   (enabled :initarg :enabled :reader service-enabled)
+   (description :initarg :description :reader service-description)))
+
+(defgeneric add-service (context &key name type description))
+
+(def-rest-method add-service ((connection connection-v2) &key name type (description ""))
+    ((:documentation "Add a service.")
+     (:endpoint-type :admin-url)
+     (:uri "/OS-KSADM/services"))
+  (let ((json (request-resource
+               connection
+               :method :post
+               :content (with-output-to-string (stream)
+                          (with-explicit-encoder
+                            (encode-json
+                             `(:object
+                               "OS-KSADM:service"
+                               (:object
+                                :name ,name
+                                :type ,type
+                                :description ,description))
+                             stream))))))
+    (decode-resource (assoc* :OS-KSADM--service json) connection 'service-v2)))
+
+
+(defgeneric get-service (resource service-id))
+
+(def-rest-method get-service ((connection connection-v2) service-id)
+    ((:documentation "Get a service.")
+     (:endpoint-type :admin-url)
+     (:uri "/OS-KSADM/services/{service-id}"))
+  (let ((json (request-resource connection :method :get)))
+    (decode-resource (assoc* :OS-KSADM--service json) connection 'service-v2)))
+
+
+(defgeneric delete-service (context service-or-service-id))
+
+(def-rest-method delete-service ((connection connection-v2) service-or-service-id)
+    ((:documentation "Delete a service.")
+     (:endpoint-type :admin-url)
+     (:uri "/OS-KSADM/services/{service-or-service-id}"))
+  (request-resource connection :method :delete))
+
+
+(defgeneric list-services (resource))
+
+(def-rest-method list-services ((connection connection-v2))
+    ((:documentation "List services.")
+     (:endpoint-type :admin-url)
+     (:uri "/OS-KSADM/services/"))
+  (let ((json (request-resource connection :method :get)))
+    (decode-resource-list (assoc* :OS-KSADM--services json) connection 'service-v2)))

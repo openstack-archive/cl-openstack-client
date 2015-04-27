@@ -12,7 +12,9 @@
                 #:format-timestring
                 #:now)
   (:import-from #:cl-keystone-client
-                #:connection-v2)
+                #:connection-v2
+                #:tenant-v2
+                #:user-v2)
   (:import-from #:cl-openstack-client
                 #:*http-stream*)
   (:import-from #:flexi-streams
@@ -25,6 +27,8 @@
                 #:make-chunked-stream)
   (:export tests
            connection-fixture
+           tenant-fixture
+           user-fixture
            with-mock-http-stream
            make-mock-http-stream
            read-mock-request
@@ -112,6 +116,32 @@
              (:endpoints-links) (:type . "identity") (:name . "keystone"))))
     connection))
 
+
+(defun tenant-fixture (&key
+                         (id "2c04749")
+                         (enabled t)
+                         (description "test description")
+                         (connection (connection-fixture)))
+  (make-instance
+   'tenant-v2
+   :connection connection
+   :id id
+   :enabled enabled
+   :description description))
+
+(defun user-fixture (&key
+                       (id "2c04749")
+                       (email "test@example.com")
+                       (enabled t)
+                       (connection (connection-fixture)))
+  (make-instance
+   'user-v2
+   :connection connection
+   :id id
+   :email email
+   :enabled enabled))
+
+
 (defclass mock-http-stream (fundamental-binary-input-stream
                             fundamental-binary-output-stream
                             fundamental-character-input-stream
@@ -132,6 +162,9 @@
           (aref (mock-response-stream stream) (mock-response-location stream))
         (incf (mock-response-location stream)))))
 
+(defmethod stream-read-char ((stream mock-http-stream))
+  (stream-read-byte stream))
+
 (defmethod stream-write-byte ((stream mock-http-stream) byte)
   (push byte (mock-request-stream stream)))
 
@@ -141,7 +174,7 @@
 (defun make-mock-http-stream (&optional (stream (make-instance 'mock-http-stream)))
   (make-flexi-stream (make-chunked-stream stream) :external-format +latin-1+))
 
-(defun mock-response (stream code &key headers content)
+(defun mock-response (stream code &key headers (content ""))
   (setf (mock-response-stream stream)
         (string-to-octets
          (with-output-to-string (http-stream)
@@ -203,7 +236,7 @@ form (parsed-status-line headers contents)"
      ,@body))
 
 
-(defun is-valid-request (stream method uri &optional content)
+(defun is-valid-request (stream method uri &key content (host "192.168.1.9:5000"))
   (destructuring-bind (status headers content1)
       (read-mock-request stream)
     (is (equal content1
@@ -213,7 +246,7 @@ form (parsed-status-line headers contents)"
                         (header-value :content-type headers))))
     (is (string-equal "MIINUAYJKoZIhvcNAQ=="
                       (header-value :x-auth-token headers)))
-    (is (string-equal "192.168.1.9:5000"
+    (is (string-equal host
                       (header-value :host headers)))
     (is (eql (getf status :method) method))
     (is (string-equal (getf status :uri) uri))))

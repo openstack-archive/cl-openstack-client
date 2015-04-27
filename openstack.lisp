@@ -2,6 +2,7 @@
   (:use cl)
   (:export #:*resource-uri*
            #:*http-stream*
+           #:*debug-stream*
 
            ;; REST resource definitions
            #:def-rest-method
@@ -16,6 +17,8 @@
            ;; Resources
            #:resource
            #:resource-connection
+           #:resource-attribute
+           #:resource-attribute-list
            #:resource-authentication-headers
            #:resource-error-class
            #:decode-resource-list
@@ -28,18 +31,26 @@
            #:id
 
            ;; Generic Utilities
+           #:decode-json
            #:assoc*)
   (:import-from #:drakma
                 #:http-request)
   (:import-from #:cl-json
+                #:*json-input*
+                #:*json-identifier-name-to-lisp*
                 #:encode-json
-                #:decode-json
                 #:encode-json-to-string)
   (:import-from #:alexandria
+                #:alist-hash-table
+                #:hash-table-keys
                 #:alist-plist)
   (:import-from #:uri-template
                 #:uri-template
-                #:read-uri-template))
+                #:read-uri-template)
+  (:import-from #:flexi-streams
+                #:make-flexi-stream
+                #:octets-to-string
+                #:make-in-memory-input-stream))
 
 
 (in-package :cl-openstack-client)
@@ -49,12 +60,42 @@
   (declare (ignore key test test-not))
   (cdr (apply #'assoc item alist rest)))
 
+(defun openstack-camel-case-to-lisp (camel-string)
+  "Convert camel case JSON keys to lisp symbol names.  This function
+handles keys with names like publicURL better and will convert keys
+with underscores to hyphens."
+  (declare (string camel-string))
+  (let ((*print-pretty* nil))
+    (with-output-to-string (result)
+      (loop :for c :across camel-string
+            :with last-was-lowercase
+            :when (and last-was-lowercase
+                       (upper-case-p c))
+              :do (princ "-" result)
+            :if (lower-case-p c)
+              :do (setf last-was-lowercase t)
+            :else
+              :do (setf last-was-lowercase nil)
+            :do (cond
+                  ((member c (list #\_))
+                   (princ "-" result))
+                  ((member c (list #\:))
+                   (princ "--" result))
+                  (t (princ (char-upcase c) result)))))))
+
+(defun decode-json (&optional (stream *json-input*))
+  (let ((*json-identifier-name-to-lisp* #'openstack-camel-case-to-lisp))
+    (cl-json:decode-json stream)))
 
 ;;; REST method helpers
 
 (defvar *http-stream* nil
   "This stream is primarily used for dependency injection in
   testcases.")
+
+(defvar *debug-stream* nil
+  "This stream is used for debugging.  Should be used in combination
+with the drakma *HEADERS-STREAM*.")
 
 (define-condition openstack-error (error)
   ((message
@@ -89,25 +130,34 @@
   (string-equal (assoc* :content-type headers)
                 "application/json"))
 
-(defun handle-http-error (resource uri status-code headers stream)
+(defun handle-http-error (resource uri status-code headers stream
+                          &key (success-codes '(200 201)))
   (block nil
     (cond
-      ((and (member status-code '(200 204))
+      ((and (member status-code success-codes)
             (json-response-p headers))
+       (return))
+      ;; No body
+      ((eq status-code 204)
        (return))
       ((json-response-p headers)
        (json-error resource (decode-json stream)))
       (t
        (unknown-error uri status-code)))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun resource-id-or-value (item)
+    "If the ITEM is a resource then resolve it to a ID, otherwise return
+the item."
+    (if (subtypep (class-of item) (find-class 'resource))
+        (resource-id item)
+        item)))
+
 (defun convert-header-resources (headers)
   "Take a list of headers and resolve any RESOURCE types to their
 RESOURCE-ID's"
   (loop :for (header . value) :in headers
-        :when (subtypep (class-of value) (find-class 'resource))
-          :collect (cons header (resource-id value))
-        :else
-          :collect (cons header value)))
+        :collect (cons header (resource-id-or-value value))))
 
 (defun return-first-connection (resources)
   (loop :for r :in resources
@@ -127,9 +177,7 @@ RESOURCE-ID's"
       (loop :for l :in rest
             :for element = (if (listp l) (car l) l)
             :until (eql (char (symbol-name element) 0) #\&)
-            :collect `(,element (if (subtypep (class-of ,element) (find-class 'resource))
-                                    (resource-id ,element)
-                                    ,element)))))
+            :collect `(,element (resource-id-or-value ,element)))))
 
 ;; Resources act as a base class for all types.
 
@@ -138,7 +186,8 @@ RESOURCE-ID's"
        :reader resource-id)
    (connection :initarg :connection
                :reader resource-connection)
-   (attributes :initform (make-hash-table))))
+   (attributes :initarg :attributes
+               :initform (make-hash-table))))
 
 (defmethod resource-error-class ((resource resource))
   'openstack-error)
@@ -151,11 +200,13 @@ RESOURCE-ID's"
 
 (defmethod decode-resource (resource parent type)
   ;; TODO (RS) currently extra keys are just ignored in all resources,
-  ;; it would be best if they were saved somewhere.
+  ;; it would be best if they were saved somewhere.  This will need to
+  ;; be added to support extensions that tack extra data on.
   (apply #'make-instance
          type
          :connection (resource-connection parent)
          :parent parent
+         :attributes (alist-hash-table resource)
          (concatenate 'list
                       (alist-plist resource)
                       '(:allow-other-keys t))))
@@ -167,6 +218,17 @@ RESOURCE-ID's"
 (defgeneric resource-authentication-headers (resource)
   (:documentation "Return a list of the authentication headers that
   should be added to the request."))
+
+
+(defgeneric resource-attribute (resource attribute))
+
+(defmethod resource-attribute ((resource resource) attribute)
+  (gethash attribute (slot-value resource 'attributes)))
+
+(defgeneric resource-attribute-list (resource))
+
+(defmethod resource-attribute-list ((resource resource))
+  (hash-table-keys (slot-value resource 'attributes)))
 
 (defvar *resource-uri* nil)
 
@@ -188,16 +250,31 @@ RESOURCE-ID's"
                                ((stringp content)
                                 content)
                                (t
-                                (encode-json-to-string content)))
-                    :want-stream t)
-    (declare (ignore body must-close reason-phrase))
-    (handle-http-error resource uri status-code headers stream)
+                                (encode-json-to-string content))))
+    (declare (ignore stream must-close reason-phrase))
+    (let ((stream (make-flexi-stream (make-in-memory-input-stream body) :external-format :utf-8)))
+      (handle-http-error resource uri status-code headers stream))
     (cond
+      ((eq status-code 204)
+       nil)
       ((equal content-type "application/json")
-       (decode-json stream))
-      (t stream))))
+       (when *debug-stream*
+         (write-sequence (octets-to-string body :external-format :utf-8) *debug-stream*)
+         (terpri *debug-stream*)
+         (terpri *debug-stream*))
+       (let ((stream (make-flexi-stream (make-in-memory-input-stream body) :external-format :utf-8)))
+         (decode-json stream)))
+      (t body))))
 
-(defgeneric service-url (resource &optional service-name))
+(defgeneric service-url (resource &key service-name endpoint-type))
+
+(defun url-join (&rest parts)
+  (format nil "~{~A~^/~}" parts))
+
+(defun build-query-string (url &rest query-string)
+  (if query-string
+      (format nil "~a?~{~(~a~)=~(~a~)~^&~}" url query-string)
+      url))
 
 (defmacro def-rest-method (name lambda-list options &body body)
   "A convenience wrapper around request-resource.
@@ -224,17 +301,36 @@ BODY is a for the method body.
 "
   (let ((uri (or (cadr (assoc :uri options))
                  (error ":URI is required.")))
-        (documentation (cdr (assoc :documentation options))))
+        (service-type (when (assoc :service-type options)
+                        (list :service-name (cadr (assoc :service-type options)))))
+        (endpoint-type (when (assoc :endpoint-type options)
+                         (list :endpoint-type (cadr (assoc :endpoint-type options)))))
+        (documentation (cdr (assoc :documentation options)))
+        (query (loop
+                 :for item :in (cadr (assoc :query options))
+                 :for (q v) = (cond
+                                ((listp item) item)
+                                (t (list (symbol-name item)
+                                         item)))
+                 :collect (list 'list q v))))
     `(defmethod ,name ,lambda-list
        ,@documentation
        (let ((*resource-uri*
-               (format nil "~a/~a"
-                       (service-url ,(car (apply #'lambda-list-variables lambda-list)))
-                       (let ,(apply #'convert-lambda-list-resources lambda-list)
-                         (declare (ignorable ,@(apply #'lambda-list-variables lambda-list)))
-                         (uri-template
-                          ,@(with-input-from-string (stream uri)
-                              (read-uri-template stream t)))))))
+               (apply
+                #'build-query-string
+                (url-join
+                 (apply #'service-url
+                        ,(car (apply #'lambda-list-variables lambda-list))
+                        (list ,@service-type ,@endpoint-type))
+                 (let ,(apply #'convert-lambda-list-resources lambda-list)
+                   (declare (ignorable ,@(apply #'lambda-list-variables lambda-list)))
+                   (uri-template
+                    ,@(with-input-from-string (stream uri)
+                        (read-uri-template stream t)))))
+                (loop
+                  :for (q v) :in (list ,@query)
+                  :for id = (resource-id-or-value v)
+                  :append (list q id)))))
          ,@body))))
 
 (defmacro def-rest-generic (name lambda-list &body options)

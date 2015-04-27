@@ -6,6 +6,8 @@
                 #:header-value)
   (:import-from #:cl-openstack-client.test
                 #:connection-fixture
+                #:user-fixture
+                #:tenant-fixture
                 #:with-mock-http-stream
                 #:make-mock-http-stream
                 #:mock-response
@@ -19,9 +21,7 @@
                 #:timestamp+
                 #:format-timestring
                 #:now
-                #:+utc-zone+)
-  (:import-from :cl-ppcre
-                #:regex-replace-all))
+                #:+utc-zone+))
 
 (in-package :cl-keystone-client.test)
 
@@ -175,6 +175,95 @@ from the keystone server."
       (is (eql (getf status :method) :post))
       (is (string-equal (getf status :uri) "/v2.0/tokens")))))
 
+
+(test api-versions
+  "Test listing the API version details"
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"versions\": {\"values\": [{\"status\": \"stable\", \"updated\": \"2013-03-06T00:00:00Z\", \"media-types\": [{\"base\": \"application/json\", \"type\": \"application/vnd.openstack.identity-v3+json\"}, {\"base\": \"application/xml\", \"type\": \"application/vnd.openstack.identity-v3+xml\"}], \"id\": \"v3.0\", \"links\": [{\"href\": \"http://192.168.122.210:5000/v3/\", \"rel\": \"self\"}]}, {\"status\": \"stable\", \"updated\": \"2014-04-17T00:00:00Z\", \"media-types\": [{\"base\": \"application/json\", \"type\": \"application/vnd.openstack.identity-v2.0+json\"}, {\"base\": \"application/xml\", \"type\": \"application/vnd.openstack.identity-v2.0+xml\"}], \"id\": \"v2.0\", \"links\": [{\"href\": \"http://192.168.122.210:5000/v2.0/\", \"rel\": \"self\"}, {\"href\": \"http://docs.openstack.org/\", \"type\": \"text/html\", \"rel\": \"describedby\"}]}]}}")
+    (let ((version-response (list-versions (connection-fixture))))
+      (destructuring-bind (status headers content)
+          (read-mock-request mock-stream)
+        (is (eql (getf status :method) :get))
+        (is (string-equal (getf status :uri) "/")))
+      (is (equal version-response
+                 '((:versions
+                    (:values
+                     ((:status . "stable") (:updated . "2013-03-06T00:00:00Z")
+                      (:media-types
+                       ((:base . "application/json")
+                        (:type . "application/vnd.openstack.identity-v3+json"))
+                       ((:base . "application/xml")
+                        (:type . "application/vnd.openstack.identity-v3+xml")))
+                      (:id . "v3.0")
+                      (:links ((:href . "http://192.168.122.210:5000/v3/") (:rel . "self"))))
+                     ((:status . "stable") (:updated . "2014-04-17T00:00:00Z")
+                      (:media-types
+                       ((:base . "application/json")
+                        (:type . "application/vnd.openstack.identity-v2.0+json"))
+                       ((:base . "application/xml")
+                        (:type . "application/vnd.openstack.identity-v2.0+xml")))
+                      (:id . "v2.0")
+                      (:links ((:href . "http://192.168.122.210:5000/v2.0/") (:rel . "self"))
+                       ((:href . "http://docs.openstack.org/") (:type . "text/html")
+                        (:rel . "describedby"))))))))))))
+
+;;
+;; Tenants
+;;
+
+(test add-tenant
+  "Test the adding a tenant."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"tenant\": {\"description\": \"test description\", \"enabled\": true, \"id\": \"52dadc45c0c14e519f5026dbe5259fbc\", \"name\": \"test123\"}}}")
+    (let ((tenant (add-tenant (connection-fixture)
+                             :name "test123" :description "test description")))
+      (is-valid-request mock-stream :post "/v2.0//tenants"
+                        :content
+                        "{\"tenant\":{\"name\":\"test123\",\"description\":\"test description\",\"enabled\":true}}"
+                        :host "192.168.1.9:35357")
+      (is (equal (tenant-name tenant)
+                 "test123"))
+      (is (equal (tenant-id tenant)
+                 "52dadc45c0c14e519f5026dbe5259fbc"))
+      (is (equal (tenant-enabled tenant)
+                 t))
+      (is (equal (tenant-description tenant)
+                 "test description")))))
+
+
+(test get-tenant
+  "Test the getting a tenant."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"tenant\": {\"description\": \"test description\", \"enabled\": true, \"id\": \"52dadc45c0c14e519f5026dbe5259fbc\", \"name\": \"test123\"}}}")
+    (let ((tenant (get-tenant (connection-fixture) "52dadc45c0c14e519f5026dbe5259fbc")))
+      (is-valid-request mock-stream :get "/v2.0//tenants/52dadc45c0c14e519f5026dbe5259fbc"
+                        :host "192.168.1.9:35357")
+      (is (equal (tenant-name tenant)
+                 "test123"))
+      (is (equal (tenant-id tenant)
+                 "52dadc45c0c14e519f5026dbe5259fbc"))
+      (is (equal (tenant-enabled tenant)
+                 t))
+      (is (equal (tenant-description tenant)
+                 "test description")))))
+
+
+(test delete-tenant
+  "Test the deleting a tenant."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream 204)
+    (let ((tenant (delete-tenant (connection-fixture) "52dadc45c0c14e519f5026dbe5259fbc")))
+      (is-valid-request mock-stream :delete "/v2.0//tenants/52dadc45c0c14e519f5026dbe5259fbc"
+                        :host "192.168.1.9:35357")
+      (is (null tenant)))))
+
+
 (test list-tenants
   "Test the parsing of a tenants list response."
   (with-mock-http-stream (mock-stream)
@@ -194,23 +283,9 @@ from the keystone server."
       (is (equal (mapcar #'tenant-description tenants)
                  '(nil nil nil "test description" nil))))))
 
-
-(test list-users
-  "Test the parsing of a user list response."
-  (with-mock-http-stream (mock-stream)
-    (mock-response mock-stream
-                   200
-                   :content "{\"users\": [{\"name\": \"admin\", \"enabled\": true, \"email\": \"admin@example.com\", \"id\": \"6d205b8\"}, {\"name\": \"demo\", \"enabled\": false, \"email\": \"demo@example.com\", \"id\": \"db82b12\"}]}")
-    (let ((users (list-users (connection-fixture))))
-      (is-valid-request mock-stream :get "/v2.0//users")
-      (is (equal (mapcar #'user-name users)
-                 '("admin" "demo")))
-      (is (equal (mapcar #'user-id users)
-                 '("6d205b8" "db82b12")))
-      (is (equal (mapcar #'user-enabled users)
-                 '(t nil)))
-      (is (equal (mapcar #'user-email users)
-                 '("admin@example.com" "demo@example.com"))))))
+;;
+;; Users
+;;
 
 (test add-user
   "Test the adding a user."
@@ -222,7 +297,9 @@ from the keystone server."
                              :name "test" :email "test@example.com"
                              :password "secret" :enabled t)))
       (is-valid-request mock-stream :post "/v2.0//users"
-                        "{\"user\":{\"name\":\"test\",\"email\":\"test@example.com\",\"enabled\":true,\"password\":\"secret\"}}")
+                        :content
+                        "{\"user\":{\"name\":\"test\",\"email\":\"test@example.com\",\"enabled\":true,\"password\":\"secret\"}}"
+                        :host "192.168.1.9:35357")
 
       (is (equal (user-name user)
                  "test"))
@@ -232,3 +309,157 @@ from the keystone server."
                  t))
       (is (equal (user-email user)
                  "test@example.com")))))
+
+(test get-user
+  "Test the parsing of a get user response."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"user\": {\"username\": \"nova\", \"name\": \"nova\", \"id\": \"47ce9d08d7e24ba89307fe280fa66235\", \"enabled\": true, \"email\": null, \"tenantId\": \"d0335d0bad854ebfb97264647523a654\"}}")
+    (let ((user (get-user (connection-fixture) "47ce9d08d7e24ba89307fe280fa66235")))
+      (is-valid-request mock-stream :get "/v2.0//users/47ce9d08d7e24ba89307fe280fa66235"
+                        :host "192.168.1.9:35357")
+      (is (equal (user-name user) "nova"))
+      (is (equal (user-id user) "47ce9d08d7e24ba89307fe280fa66235"))
+      (is (equal (user-enabled user) t))
+      (is (equal (user-email user) nil)))))
+
+
+(test delete-user
+  "Test the deleting a user."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream 204)
+    (let ((user (delete-user (connection-fixture) "47ce9d08d7e24ba89307fe280fa66235")))
+      (is-valid-request mock-stream :delete "/v2.0//users/47ce9d08d7e24ba89307fe280fa66235"
+                        :host "192.168.1.9:35357")
+      (is (null user)))))
+
+
+(test list-users
+  "Test the parsing of a user list response."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"users\": [{\"name\": \"admin\", \"enabled\": true, \"email\": \"admin@example.com\", \"id\": \"6d205b8\"}, {\"name\": \"demo\", \"enabled\": false, \"email\": \"demo@example.com\", \"id\": \"db82b12\"}]}")
+    (let ((users (list-users (connection-fixture))))
+      (is-valid-request mock-stream :get "/v2.0//users"
+                        :host "192.168.1.9:35357")
+      (is (equal (mapcar #'user-name users)
+                 '("admin" "demo")))
+      (is (equal (mapcar #'user-id users)
+                 '("6d205b8" "db82b12")))
+      (is (equal (mapcar #'user-enabled users)
+                 '(t nil)))
+      (is (equal (mapcar #'user-email users)
+                 '("admin@example.com" "demo@example.com"))))))
+
+
+;;
+;; Roles
+;;
+
+
+(test add-role
+  "Test the adding a role."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"role\": {\"name\": \"test\", \"description\": \"test description\", \"id\": \"559b760290e346f6b7fa502328f72c64\"}}")
+    (let ((role (add-role (connection-fixture)
+                             :name "test" :description "test description")))
+      (is-valid-request mock-stream :post "/v2.0//OS-KSADM/roles"
+                        :content
+                        "{\"role\":{\"name\":\"test\",\"description\":\"test description\"}}"
+                        :host "192.168.1.9:35357")
+
+      (is (equal (role-id role)
+                 "559b760290e346f6b7fa502328f72c64"))
+      (is (equal (role-name role)
+                 "test"))
+      (is (equal (role-description role)
+                 "test description")))))
+
+(test get-role
+  "Test the parsing of a get role response."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"role\": {\"name\": \"test\", \"description\": \"test description\", \"id\": \"47ce9d08d7e24ba89307fe280fa66235\"}}")
+    (let ((role (get-role (connection-fixture) "47ce9d08d7e24ba89307fe280fa66235")))
+      (is-valid-request mock-stream :get "/v2.0//OS-KSADM/roles/47ce9d08d7e24ba89307fe280fa66235"
+                        :host "192.168.1.9:35357")
+      (is (equal (role-name role) "test"))
+      (is (equal (role-id role) "47ce9d08d7e24ba89307fe280fa66235"))
+      (is (equal (role-description role) "test description")))))
+
+(test delete-role
+  "Test the deleting a role."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream 204)
+    (let ((role (delete-role (connection-fixture) "47ce9d08d7e24ba89307fe280fa66235")))
+      (is-valid-request mock-stream :delete "/v2.0//OS-KSADM/roles/47ce9d08d7e24ba89307fe280fa66235"
+                        :host "192.168.1.9:35357")
+      (is (null role)))))
+
+(test list-roles
+  "Test the parsing of a role list response."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"roles\": [{\"id\": \"9fe2ff9ee4384b1894a90878d3e92bab\", \"name\": \"_member_\"}, {\"id\": \"fe95d236ee0a4c368b38ff0cd831111c\", \"name\": \"anotherrole\"}]}")
+    (let ((roles (list-roles (connection-fixture) t)))
+      (is-valid-request mock-stream :get "/v2.0//OS-KSADM/roles/"
+                        :host "192.168.1.9:35357")
+      (is (equal (mapcar #'role-name roles)
+                 '("_member_" "anotherrole")))
+      (is (equal (mapcar #'role-id roles)
+                 '("9fe2ff9ee4384b1894a90878d3e92bab" "fe95d236ee0a4c368b38ff0cd831111c"))))))
+
+(test list-user-roles
+  "Test the parsing of a role list response."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"roles\": [{\"id\": \"9fe2ff9ee4384b1894a90878d3e92bab\", \"name\": \"_member_\"}, {\"id\": \"fe95d236ee0a4c368b38ff0cd831111c\", \"name\": \"anotherrole\"}]}")
+    (let ((roles (list-roles (connection-fixture) (user-fixture))))
+      (is-valid-request mock-stream :get "/v2.0//users/2c04749/roles"
+                        :host "192.168.1.9:35357")
+      (is (equal (mapcar #'role-name roles)
+                 '("_member_" "anotherrole")))
+      (is (equal (mapcar #'role-id roles)
+                 '("9fe2ff9ee4384b1894a90878d3e92bab" "fe95d236ee0a4c368b38ff0cd831111c"))))))
+
+(test list-tenant-user-roles
+  "Test the parsing of a role list response."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream
+                   200
+                   :content "{\"roles\": [{\"id\": \"9fe2ff9ee4384b1894a90878d3e92bab\", \"name\": \"_member_\"}, {\"id\": \"fe95d236ee0a4c368b38ff0cd831111c\", \"name\": \"anotherrole\"}]}")
+    (let ((roles (list-roles (tenant-fixture) (user-fixture))))
+      (is-valid-request mock-stream :get "/v2.0//tenants/2c04749/users/2c04749/roles"
+                        :host "192.168.1.9:35357")
+      (is (equal (mapcar #'role-name roles)
+                 '("_member_" "anotherrole")))
+      (is (equal (mapcar #'role-id roles)
+                 '("9fe2ff9ee4384b1894a90878d3e92bab" "fe95d236ee0a4c368b38ff0cd831111c"))))))
+
+(test add-users-tenant-role
+  "Test the parsing of a role list response."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream 200
+                   :content "{\"role\": {\"name\": \"anotherrole\", \"id\": \"47ce9d08d7e24ba89307fe280fa66235\"}}")
+    (let ((role (add-users-tenant-role (tenant-fixture) (user-fixture) "9fe2ff9ee4384b1894a90878d3e92bab")))
+      (is-valid-request mock-stream :put "/v2.0//tenants/2c04749/users/2c04749/roles/OS-KSADM/9fe2ff9ee4384b1894a90878d3e92bab"
+                        :host "192.168.1.9:35357")
+      (is (equal (role-name role) "anotherrole"))
+      (is (equal (role-id role) "47ce9d08d7e24ba89307fe280fa66235")))))
+
+
+(test delete-users-tenant-role
+  "Test the parsing of a role list response."
+  (with-mock-http-stream (mock-stream)
+    (mock-response mock-stream 204)
+    (let ((role (delete-users-tenant-role (tenant-fixture) (user-fixture) "9fe2ff9ee4384b1894a90878d3e92bab")))
+      (is-valid-request mock-stream :delete "/v2.0//tenants/2c04749/users/2c04749/roles/OS-KSADM/9fe2ff9ee4384b1894a90878d3e92bab"
+                        :host "192.168.1.9:35357")
+      (is (null role)))))
