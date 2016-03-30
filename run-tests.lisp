@@ -1,3 +1,8 @@
+(let ((asdf-file (make-pathname :directory (pathname-directory (user-homedir-pathname))
+                                :name "asdf" :type "lisp")))
+  (when (probe-file asdf-file)
+    (load asdf-file)))
+
 (load (merge-pathnames "quicklisp/setup.lisp"
                        (user-homedir-pathname)))
 
