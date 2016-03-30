@@ -3,4 +3,3 @@
 
 build-essential [platform:dpkg]
 language-pack-en [platform:dpkg]
-sbcl

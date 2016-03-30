@@ -2,9 +2,17 @@
 set -e
 set -x
 export HOME=$PWD/.test-env
-mkdir $HOME
+[ -d $HOME ] || mkdir $HOME
 cd $HOME
-wget -q http://beta.quicklisp.org/quicklisp.lisp -O quicklisp.lisp
+export CIM_HOME=$HOME
+if [ ! -e $HOME/init.sh ]; then
+    curl -L https://raw.github.com/KeenS/CIM/master/scripts/cim_installer | /bin/sh
+fi
+source "$CIM_HOME/init.sh"
+cim install sbcl || true
+cim use sbcl
 sbcl --script ../update-deps.lisp
-ln -s $PWD/.. ~/quicklisp/local-projects/cl-openstack-client
+if [ ! -L ~/quicklisp/local-projects/cl-openstack-client ]; then
+    ln -s $PWD/.. ~/quicklisp/local-projects/cl-openstack-client
+fi
 sbcl --script ../run-tests.lisp
