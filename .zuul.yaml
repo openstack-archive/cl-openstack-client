@@ -1,0 +1,23 @@
+- job:
+    name: cl-openstack-client-run-tests
+    description: |
+      Run tests for cl-openstack-client project.
+    run: playbooks/run-tests/run.yaml
+
+- job:
+    name: cl-openstack-client-run-test-command
+    description: |
+      Run tests for cl-openstack-client project.
+    parent: run-test-command
+    vars:
+      test_command: "./run-tests.sh"
+
+- project:
+    check:
+      jobs:
+        - cl-openstack-client-run-tests
+        - cl-openstack-client-run-test-command
+    gate:
+      jobs:
+        - cl-openstack-client-run-tests
+        - cl-openstack-client-run-test-command
