@@ -1,4 +1,3 @@
-cl-openstack-client
-===================
+# This repo has moved to OpenDev
 
-Common Lisp OpenStack client libraries
+It can now be found at [https://opendev.org/x/cl-openstack-client](https://opendev.org/x/cl-openstack-client)
